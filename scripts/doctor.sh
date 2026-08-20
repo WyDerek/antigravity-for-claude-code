@@ -346,8 +346,20 @@ SETTINGS="$HOME/.gemini/antigravity-cli/settings.json"
 if [ -f "$SETTINGS" ]; then
   PROJ="$(sed -n 's/.*"project"[: ]*"\([^"]*\)".*/\1/p' "$SETTINGS" | head -1)"
   LOC="$(sed -n 's/.*"location"[: ]*"\([^"]*\)".*/\1/p' "$SETTINGS" | head -1)"
+  DEFMODEL="$(sed -n 's/.*"model"[: ]*"\([^"]*\)".*/\1/p' "$SETTINGS" | head -1)"
   ok "agy settings: ${SETTINGS/#$HOME/~}"
   [ -n "$PROJ" ] && info "GCP project: $PROJ   location: ${LOC:-?}"
+  # agy's OWN persisted default model (plain `agy`/`agy -p`) — distinct from this plugin's
+  # default_tier/default_model/tier_* options, which only steer agy-delegate.sh calls.
+  # Change this one with `agy-set-model <name>`.
+  if [ -n "$DEFMODEL" ]; then
+    info "agy default model: $DEFMODEL (change with \`agy-set-model <name>\`)"
+    # Only cross-check against a live model list when section 2 actually populated one
+    # (skipped when agy isn't on PATH) — MODELS is unset otherwise and set -u would abort.
+    if [ -n "${MODELS:-}" ]; then
+      model_present "$DEFMODEL" || warn "configured default model not in \`agy models\`: $DEFMODEL (run \`agy-set-model --list\`)"
+    fi
+  fi
 
   # 3b. permissions.allow entries agy cannot use as written.
   if BAD_RULES="$(bad_allow_rules "$SETTINGS")"; then
@@ -385,7 +397,7 @@ else
 fi
 
 # 4. plugin scripts executable
-for s in agy-delegate.sh agy-cost-compare.sh cloud-debug.sh agy-trace.sh agy-media.sh; do
+for s in agy-delegate.sh agy-cost-compare.sh cloud-debug.sh agy-trace.sh agy-media.sh agy-set-model.sh; do
   if [ -x "$HERE/$s" ]; then ok "$s executable"; else
     bad "$s not executable"; info "fix: chmod +x \"$HERE/$s\""
   fi
@@ -400,7 +412,7 @@ done
 
 # 4b2. bin/ entrypoints executable (added to the Bash-tool PATH; commands/skills call
 #      these bare names — $CLAUDE_PLUGIN_ROOT is not exported to model-run Bash, issue #11)
-for b in agy-delegate agy-job agy-cost-compare agy-doctor cloud-debug agy-trace measure-session agy-media; do
+for b in agy-delegate agy-job agy-cost-compare agy-doctor cloud-debug agy-trace measure-session agy-media agy-set-model; do
   if [ -x "$ROOT/bin/$b" ]; then ok "bin/$b executable"; else
     bad "bin/$b not executable"; info "fix: chmod +x \"$ROOT/bin/$b\""
   fi
