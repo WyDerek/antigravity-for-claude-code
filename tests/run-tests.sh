@@ -696,7 +696,7 @@ else echo "FAIL: delegate agent missing proactive-with-judgment description"; FA
 
 echo "== bin/ entrypoints (issue #11: \$CLAUDE_PLUGIN_ROOT not on model-run Bash) =="
 BIN="$ROOT/bin"
-for b in agy-delegate agy-job agy-cost-compare agy-doctor cloud-debug agy-trace measure-session agy-media; do
+for b in agy-delegate agy-job agy-cost-compare agy-doctor cloud-debug agy-trace measure-session agy-media agy-set-model; do
   if [ -x "$BIN/$b" ]; then echo "ok: bin/$b executable"; PASS=$((PASS+1));
   else echo "FAIL: bin/$b missing or not executable"; FAIL=$((FAIL+1)); fi
 done
@@ -711,6 +711,75 @@ check "bin/cloud-debug forwards to cloud-debug.sh (no CLAUDE_PLUGIN_ROOT)" 0 "$r
 out=$(env -u CLAUDE_PLUGIN_ROOT "$BIN/measure-session" 2>&1 | head -1)
 case "$out" in *measure-session*) echo "ok: bin/measure-session forwards to the .py"; PASS=$((PASS+1));;
   *) echo "FAIL: bin/measure-session did not forward (got: '$out')"; FAIL=$((FAIL+1));; esac
+out=$(env -u CLAUDE_PLUGIN_ROOT "$BIN/agy-set-model" --list 2>/dev/null); rc=$?
+check "bin/agy-set-model forwards to the wrapper (no CLAUDE_PLUGIN_ROOT)" 0 "$rc" "gemini-3.6-flash-high" "$out"
+
+echo "== agy-set-model.sh (change agy's own persisted default model) =="
+SET_MODEL="$ROOT/scripts/agy-set-model.sh"
+SETTINGS_TMP="$TMP/agy-settings.json"
+
+out=$(AGY_SETTINGS_FILE="$SETTINGS_TMP" "$SET_MODEL" --list 2>/dev/null); rc=$?
+check "--list prints the live agy models list" 0 "$rc" "gemini-3.1-pro-high" "$out"
+
+out=$(AGY_SETTINGS_FILE="$SETTINGS_TMP" "$SET_MODEL" --current 2>&1); rc=$?
+check "--current with no settings file yet -> exit 1" 1 "$rc" "no settings file yet" "$out"
+
+# The shared stub emits bare slugs, no tab-separated display name (agy 1.1.5-1.1.x
+# format) — RESOLVED falls back to the matched line itself, so expectations here are
+# slugs. The tab-separated "slug\tdisplay name" format (newer agy) is exercised manually
+# against the real CLI; cut -f2's no-delimiter fallback (whole line) covers this shape.
+out=$(AGY_SETTINGS_FILE="$SETTINGS_TMP" "$SET_MODEL" "gemini-3.6-flash-high" 2>&1); rc=$?
+check "set by exact slug -> ok" 0 "$rc" "gemini-3.6-flash-high" "$out"
+
+out=$(AGY_SETTINGS_FILE="$SETTINGS_TMP" "$SET_MODEL" --current 2>/dev/null); rc=$?
+check "--current reflects the write" 0 "$rc" "gemini-3.6-flash-high" "$out"
+
+out=$(python3 -c 'import json; print(json.load(open("'"$SETTINGS_TMP"'"))["model"])' 2>&1)
+check "settings.json actually contains the new model" 0 "$?" "gemini-3.6-flash-high" "$out"
+
+out=$(AGY_SETTINGS_FILE="$SETTINGS_TMP" "$SET_MODEL" "gemini 3 1 pro high" 2>&1); rc=$?
+check "set by normalized/loose name -> matches" 0 "$rc" "gemini-3.1-pro-high" "$out"
+
+out=$(AGY_SETTINGS_FILE="$SETTINGS_TMP" "$SET_MODEL" "totally-fake-model" 2>&1); rc=$?
+check "unknown model -> exit 14, lists available models" 14 "$rc" "gemini-3.1-pro-high" "$out"
+
+out=$(AGY_SETTINGS_FILE="$SETTINGS_TMP" "$SET_MODEL" --current 2>/dev/null); rc=$?
+check "a rejected write leaves the prior default untouched" 0 "$rc" "gemini-3.1-pro-high" "$out"
+
+echo '{"model":"stale","trustedWorkspaces":["/home/x"]}' > "$SETTINGS_TMP"
+out=$(AGY_SETTINGS_FILE="$SETTINGS_TMP" "$SET_MODEL" "gemini-3.5-flash-low" 2>&1); rc=$?
+check "write preserves unrelated keys" 0 "$rc" "" ""
+out=$(python3 -c 'import json; d=json.load(open("'"$SETTINGS_TMP"'")); print(d["trustedWorkspaces"][0])' 2>&1)
+check "trustedWorkspaces survived the read-modify-write" 0 "$?" "/home/x" "$out"
+
+echo 'not json' > "$SETTINGS_TMP"
+out=$(AGY_SETTINGS_FILE="$SETTINGS_TMP" "$SET_MODEL" "gemini-3.5-flash-low" 2>&1); rc=$?
+check "invalid existing settings.json -> refuses to overwrite (exit 2)" 2 "$rc" "not valid JSON" "$out"
+
+out=$(AGY_SETTINGS_FILE="$SETTINGS_TMP" "$SET_MODEL" 2>&1); rc=$?
+check "no args -> usage, exit 1" 1 "$rc"
+
+PATH_NO_AGY="$TMP/min"
+out=$(PATH="$PATH_NO_AGY" AGY_SETTINGS_FILE="$SETTINGS_TMP" "$SET_MODEL" "gemini-3.5-flash-low" 2>&1); rc=$?
+check "agy not on PATH -> exit 13" 13 "$rc" "not found on PATH" "$out"
+
+# Newer agy (observed in the wild, not yet the shared stub's shape) emits
+# "<slug>\t<display name>" from `agy models`. A dedicated stub here exercises that the
+# resolved value stored is the display name, not the slug — matching what agy's own
+# settings.json already held before this script existed.
+mkdir -p "$TMP/bin-tabbed"
+cat > "$TMP/bin-tabbed/agy" <<'STUB'
+#!/usr/bin/env bash
+[ "$1" = "models" ] && { printf 'gemini-3.1-pro-high\tGemini 3.1 Pro (High)\n'; exit 0; }
+exit 99
+STUB
+chmod +x "$TMP/bin-tabbed/agy"
+rm -f "$SETTINGS_TMP"   # the invalid-JSON test above left this file un-parseable
+# Prepend (not replace) PATH: this test only cares about which `agy` gets found first,
+# and needs the rest of PATH's usual utilities (mkdir etc.) — unlike the minimal-PATH
+# "agy missing" test above, which exits before reaching any of them.
+out=$(PATH="$TMP/bin-tabbed:$PATH" AGY_SETTINGS_FILE="$SETTINGS_TMP" "$SET_MODEL" "gemini-3.1-pro-high" 2>&1); rc=$?
+check "tab-separated agy models -> resolves to display name" 0 "$rc" "Gemini 3.1 Pro (High)" "$out"
 
 echo "== doctor.sh tier-model check (agy 1.1.5 slug format) =="
 # The stub's `agy models` emits slugs (gemini-3.5-flash); doctor's default tier models are
@@ -1327,7 +1396,7 @@ for s in ("hooks/check-agy.sh", "hooks/inject-policy.sh", "hooks/validate-delega
 
 # bin/ entrypoints exist + executable (issue #11: $CLAUDE_PLUGIN_ROOT isn't exported
 # to model-run Bash, so commands/skill must call these bare names on the PATH)
-for b in ("agy-delegate", "agy-job", "agy-cost-compare", "agy-doctor", "cloud-debug", "agy-trace", "measure-session", "agy-media"):
+for b in ("agy-delegate", "agy-job", "agy-cost-compare", "agy-doctor", "cloud-debug", "agy-trace", "measure-session", "agy-media", "agy-set-model"):
     need(os.access(p("bin", b), os.X_OK), "bin entrypoint missing/not executable: bin/" + b)
 
 # regression guard: commands & skill must NOT invoke $CLAUDE_PLUGIN_ROOT/scripts/* — that

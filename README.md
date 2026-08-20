@@ -89,6 +89,7 @@ In Claude Code:
 | command | what it does |
 |---|---|
 | `/antigravity:setup` | health check — `agy` installed + authenticated, scripts ready |
+| `/antigravity:set-model [name\|slug\|--list\|--current]` | change agy's own default model, validated live against `agy models` (separate from this plugin's delegation tiers) |
 | `/antigravity:delegate [--tier flash\|pro] <task>` | delegate a subtask to agy under cost discipline, then verify |
 | `/antigravity:review [--adversarial]` | independent cross-model review of the current diff; Claude reconciles |
 | `/antigravity:research <topic>` | Claude-orchestrated deep research — agy does grounded web legwork, Claude verifies citations across ≥2 sources |
@@ -197,6 +198,13 @@ via plugin options — `default_model`, or per-tier `tier_flash` / `tier_flash_l
 (env `CLAUDE_PLUGIN_OPTION_*`). Keep the executor a *different, cheaper* model than the Claude
 conductor — that's what gives both the cost saving and the cross-model verification.
 
+Those plugin options only affect calls made **through** `agy-delegate.sh`. agy has its own,
+separate default model for plain `agy` / `agy -p` runs, persisted in
+`~/.gemini/antigravity-cli/settings.json`. Change *that* one with `/antigravity:set-model
+<name>` (or `agy-set-model <name>` directly) — it validates the name against a live `agy
+models` call rather than a hardcoded list, so it always reflects what your plan currently
+exposes.
+
 > **Verified through agy 1.1.5.** A newer **Gemini 3.6 Flash** now shows up in `agy models` and works — the `flash` default stays on **Gemini 3.5 Flash (High)** for broad plan availability (newer models can lag on enterprise Vertex); remap `tier_flash` to `Gemini 3.6 Flash (High)` when your plan serves it. (agy 1.1.5 switched `agy models` to slugs like `gemini-3.5-flash`; both slugs and display names work with `--model`, and `doctor` matches either.)
 
 </details>
@@ -272,8 +280,8 @@ skills/antigravity/SKILL.md   WHEN + HOW Claude collaborates with agy
 agents/           antigravity-delegate subagent (file work runs on Gemini, not Claude)
 commands/         slash commands (delegate, review, research, media, cloud-run-debug, setup, status, result, cancel)
 hooks/            SessionStart: agy health check + auto-inject the cost-aware policy
-bin/              PATH shims (bare names): agy-delegate · agy-job · agy-cost-compare · agy-doctor · cloud-debug · agy-trace · agy-media · measure-session · agy-migrate
-scripts/          agy-delegate · agy-job · agy-cost-compare · cloud-debug · agy-trace · agy-media · measure-session · doctor · agy-migrate
+bin/              PATH shims (bare names): agy-delegate · agy-job · agy-cost-compare · agy-doctor · cloud-debug · agy-trace · agy-media · measure-session · agy-migrate · agy-set-model
+scripts/          agy-delegate · agy-job · agy-cost-compare · cloud-debug · agy-trace · agy-media · measure-session · doctor · agy-migrate · agy-set-model
 docs/             AB-RESULTS (measured A/B) · POC-PLAYBOOK · TROUBLESHOOTING · DEMO-KIT
 prices.json       Vertex rate config (verify before quoting)
 ```

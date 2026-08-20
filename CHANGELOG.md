@@ -3,6 +3,22 @@
 All notable changes to **Antigravity for Claude Code**. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are in `.claude-plugin/plugin.json`.
 
+## 0.24.0
+- **New: `/antigravity:set-model` / `agy-set-model` — change agy's own default model.**
+  The plugin's `default_tier`/`default_model`/`tier_*` userConfig options only steer calls
+  made through `agy-delegate.sh`; nothing in the plugin ever wrote to agy's own persisted
+  default in `~/.gemini/antigravity-cli/settings.json`'s `"model"` field, which is what
+  plain `agy`/`agy -p` runs use and what an older agy silently falls back to when `--model`
+  doesn't take effect (see the 1.1.10 note in the skill). A user changing tiers via
+  `/plugin config` and then running `agy` directly saw no change at all — the two "default
+  model" concepts don't overlap, and there was no command for the second one.
+  `agy-set-model <name-or-slug>` validates the request against a **live** `agy models` call
+  (not a hardcoded list — availability is plan-dependent and moves fast) using the same
+  normalize-and-match logic doctor.sh uses for tier checks, then writes only the `"model"`
+  key via a read-modify-write that preserves the rest of the file and replaces it
+  atomically. `--list` prints the live model list; `--current` prints the configured
+  default without changing anything.
+
 ## 0.23.0
 - **New: `/antigravity:migrate` — move an existing Claude Code setup onto agy.**
   `agy plugin import claude` already exists, and on any current install it prints
