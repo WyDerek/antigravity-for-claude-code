@@ -73,12 +73,18 @@ live `agy models` call instead of a hardcoded name.
 > it would actually run. Below 1.1.11 it does not probe, because there the slash command
 > falls through as prompt text and the model answers as though it had run.
 >
-> The `flash` default is **Gemini 3.5 Flash (High)**, for broad plan availability — newer
-> models can lag on enterprise Vertex. Gemini 3.6 Flash is available and its **output is
-> cheaper ($7.50/M vs $9.00/M; input and cached-input unchanged — confirmed against two
-> pricing sources)**, so remapping `tier_flash` to `gemini-3.6-flash-high` is reasonable
-> when your plan serves it. Price it with `prices.json`'s `gemini_flash_36`;
-> `agy-cost-compare` picks the `gemini_flash` key by tier name, not by model.
+> The `flash` tiers default to **Gemini 3.7 Flash (High)** / **(Low)** since 0.24.0.
+> 3.6 and 3.7 are priced identically and undercut 3.5 on every axis today: input
+> and cached-input are exactly half ($1.50 -> $0.75, $0.15 -> $0.075) and output
+> is cheaper still, $9.00 -> $3.75 — a 58% cut, not a halving. Under a
+> promotion that **ends 2026-12-31** and then settles at $1.50 / $7.50 / $0.15.
+> Price a run with `prices.json`'s `gemini_flash`, which mirrors whatever the flash
+> tier resolves to; `agy-cost-compare` picks that key by tier NAME, not by model.
+>
+> **The move is justified on price and currency, not on quality** — no comparison
+> has been run between these models on a build where `--model` actually applies.
+> If a plan does not serve 3.7, `doctor` says so and a delegation exits 14 naming
+> the fix; remap `tier_flash` to a name from `agy models` (3.6 costs the same).
 >
 > **Retracted:** earlier versions of this note quoted token-level comparisons between
 > 3.5 / 3.6 / `flash-medium` (−23% input, `cache_read` +43%, and so on). Those runs were
@@ -103,9 +109,7 @@ Vertex AI Search / terminal, and for writes not covered by a `permissions.allow`
 file write the narrower grant is usually a `write_file(<dir>)` entry in
 `~/.gemini/antigravity-cli/settings.json`, which needs no flag — see below. Run write tasks
 on a branch) · `--mode accept-edits|plan`
-(agy execution mode: `accept-edits` auto-applied file edits headless on 1.1.0–1.1.2 but is
-**soft-denied on 1.1.3** — no longer a dependable headless write grant;
-`plan` = strategize only) · `--sandbox` ·
+(agy execution mode. `--mode accept-edits` is NOT a headless write grant. Measured on agy 1.1.13 — where the flag is actually applied, since 1.1.12 fixed `--mode` being ignored in headless `-p` entirely — the write is denied exactly like one without it. Earlier notes here said "soft-denied on 1.1.3"; on a build where the flag was never applied, that observation could not tell a denial apart from the flag doing nothing. `plan` = strategize only) · `--sandbox` ·
 `--digest` (append a digest-only output contract — use it for any
 bulk read/analysis; the wrapper also warns on stderr when a reply comes back dump-sized,
 because ingesting digests instead of dumps is the single biggest cost lever) ·
@@ -146,7 +150,8 @@ wrapper; it returns a digest for you to verify). Either way, *you* still own ver
 **Structured failures.** The wrapper exits `10` quota · `11` auth · `12` timeout · `13`
 agy-missing · `14` model-unavailable (a `--model` / `tier_*` / `default_model` name not in
 `agy models` — agy ≥ 1.1.2 hard-fails instead of silently downgrading) · `15`
-permission-denied (agy ≥ 1.1.3 soft-denies a permissioned tool headless — pass `--yolo`)
+permission-denied (a tool needed permission headless — BOTH agy 1.1.3's soft deny and
+1.1.13's hard error — add a `permissions.allow` rule or pass `--yolo`)
 (besides `2` failed / `3` empty). On agy ≥ 1.1.8 these are derived from the structured
 `status`/`error` envelope rather than stderr pattern-matching, so the classification is
 reliable. It prints a `AGY_SIGNAL {...}` line on stderr;
@@ -216,8 +221,9 @@ Read-only work (search, review, analysis) is low-risk. **When agy writes files o
 commands** (`--yolo` grants write + terminal):
 - **Write tasks need a grant — and it does not have to be `--yolo`.** Headless agy's no-permission behavior has shifted
   every few releases — describe-only (pre-1.1.0), scratch-divert (1.1.0–1.1.2), soft-deny
-  with a stderr notice (1.1.3) — but in every version **your workspace stays untouched
-  while the run still "succeeds"** (issue #10). **Two things grant a write, and `--yolo` is
+  with a stderr notice (1.1.3+), **hard error by 1.1.13** — but **your workspace stays
+  untouched every time**; what varies is whether the run admits it (issue #10). The
+  wrapper maps the soft deny and the hard error alike to exit 15. **Two things grant a write, and `--yolo` is
   the blunt one.** A `write_file(<dir>)` entry under `permissions.allow` in
   `~/.gemini/antigravity-cli/settings.json` allows writes **recursively beneath `<dir>`**
   with no flag at all — confirmed on agy 1.1.9 by a controlled A/B (#37): covered target
@@ -234,7 +240,8 @@ commands** (`--yolo` grants write + terminal):
   Run write tasks on a branch and verify with `git status`.
   prompt for or block `--dangerously-skip-permissions` — approve it or pre-allow
   `Bash(agy-delegate*)`. Always verify files actually changed **in the workspace** with
-  `git status` (the wrapper maps a 1.1.3 soft-deny to exit `15` so you're not left guessing).
+  `git status` (the wrapper maps BOTH denial shapes — 1.1.3's soft deny and 1.1.13's
+  hard error — to exit `15`, so you're not left guessing).
 - Run it on a **dedicated git branch or worktree** so changes are isolated.
 - Add `--sandbox` for execution containment.
 - **Claude reviews the diff before merging** — never auto-merge agy's writes.
@@ -413,7 +420,9 @@ agy-delegate --dir . --yolo --digest --timeout 10m \
 
 Verified behaviors (1.0.12 → 1.1.5):
 - **Pass `--yolo`.** On 1.1.3+ the subagent tools need permission that headless mode
-  can't prompt for, so without `--yolo` the spawn is soft-denied (wrapper exit 15).
+  can't prompt for, so without `--yolo` the spawn is denied (wrapper exit 15). Whether
+  it is a soft deny or the hard error 1.1.13 introduced for writes has not been
+  measured for this tool — the grant and the exit code are the same either way.
   (On 1.0.x spawning was ungated, but `--yolo` is the durable choice here: a
   `permissions.allow` `write_file(...)` rule covers file writes only, not
   `define_subagent`/`invoke_subagent`, and not web / Vertex AI Search.)
