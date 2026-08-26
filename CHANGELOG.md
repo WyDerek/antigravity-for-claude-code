@@ -3,6 +3,108 @@
 All notable changes to **Antigravity for Claude Code**. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are in `.claude-plugin/plugin.json`.
 
+## 0.25.1
+
+The `--sandbox` follow-up 0.25.0 deferred, now that agy runs again — and the answer is no.
+
+- **`--sandbox` is not containment, and four documents were recommending it as such.**
+  0.25.0 held it back because agy was failing every run with an eligibility error and this
+  repository does not ship behavioural changes it cannot measure. Measured now, on macOS
+  with agy 1.1.19: **with `--yolo`, the flag changes nothing.** A write to an absolute path
+  *outside* `--dir` succeeded (rc 0, 8 bytes, verified by content), `id` ran and returned a
+  real uid, and `curl https://example.com` returned 200 — identical with and without it.
+  agy's own `--help` says "terminal restrictions"; whatever it restricts, it is not those,
+  not in this combination. Not tested on Linux, and the claim is scoped to what was run.
+  Withholding it in 0.25.0 turned out to be the right call for the wrong reason: it would
+  have been a flag that reads as containment and provides none, which is the exact shape
+  this repository keeps having to remove.
+- **The warning 0.25.0 added to `agy-media` understated the exposure.** It said `--dir`
+  exposes the containing directory. The same measurement shows `--dir` is not a boundary —
+  it is where agy starts looking. `--yolo` is a grant over the **whole machine**, and the
+  message says that now.
+- Two guards, both mutation-verified: no user-facing file may recommend `--sandbox` as
+  containment, and the media warning must say the grant covers the machine.
+  **The containment rule needed five shapes; four were killed by a mutation, not by reading.** Matching
+  per line exempted any line containing "is not" — and the measurement sentence pasted
+  after the claim says "it is not those", so re-adding "adds containment" passed. Per line
+  with the negation required *adjacent* to the word fixed that and then missed a claim
+  split across a wrap, which is how prose is written. Two-line windows fixed the wrap and
+  then exempted a bad sentence sitting beside a good one, because the neighbour's negation
+  satisfied the whole window. `tests/check-sandbox-claims.py` judges **sentences**, so each
+  claim carries its own negation or none — and adjacent PAIRS are judged too, after a
+  fourth mutation showed a claim can be spread across two sentences ("Add `--sandbox` for
+  isolation. It contains the untrusted commands."), which neither half trips alone. Both
+  passes run and neither subsumes the other. The negation also accepts contractions:
+  requiring the literal word would have flagged "`--sandbox` doesn't contain the agent",
+  a *correct* sentence, which is the opposite failure and the one that gets a checker
+  deleted. It does NOT catch a claim spread over three or more sentences, and that is left
+  alone on purpose: a window of N is beatable at N+1, so widening is a race the checker
+  cannot win, and each widening adds false-positive surface. It guards against drift; it
+  is not a proof. All six shapes are pinned by the checker's own tests — and the contraction case
+  had to be rewritten, because its first version said "does not contain anything; it
+  doesn't contain the agent", where the bare "not" matched first and the case passed with
+  contraction support deleted outright. Both reviewers caught that independently.
+- The comments in `agy-media.sh` and the test block still framed the exposure as the
+  containing directory, directly above the new text saying the opposite, and `SKILL.md`'s
+  recipes still passed `--yolo --sandbox` — teaching a flag the same file had just called
+  useless. Both found in review.
+
+298 -> 305.
+
+## 0.25.0 — security
+
+Fixes **GHSA-hwv2-vjgj-8rcv** (CVSS 8.6), reported privately by @Valkyness with
+non-destructive, exit-code-only proofs for every claim. `SECURITY.md` names
+`hooks/validate-delegate-bash.sh` as the only control on what the prompt-injectable
+`antigravity-delegate` subagent may run, so a bypass there is the highest-severity class
+this project has. Three of them were open at once.
+
+- **The gate authenticated a command by BASENAME.** `base()` reduced the first token to
+  its filename, so any executable called `agy-delegate`, `agy-job`, or an allowed producer
+  passed *from anywhere*: `./agy-delegate` out of a cloned repository, `/tmp/evil/agy-job`.
+  Untrusted repository content is the exact prompt-injection source `SECURITY.md` names,
+  so the control was defeated by the checkout it exists to survive. A wrapper must now be
+  a **bare name** — no `/`, no `\`. Nothing needed a path: `agents/`, `commands/` and
+  `skills/` have invoked these by bare name since 0.14.0, because the plugin puts `bin/`
+  on the Bash tool PATH and `$CLAUDE_PLUGIN_ROOT` is not exported to model-run Bash
+  (issue #11). A bare name resolves through PATH; a path resolves through the working
+  directory, which an attacker controls.
+- **The producer allowlist is gone entirely**, which closes the other two findings at
+  once. It was the second half of the #29 hardening, kept so
+  `git diff | agy-delegate -` would work, and that convenience was the hole:
+  - `git` with unrestricted arguments is a living-off-the-land binary.
+    `git -c alias.x='!cmd' x` runs `cmd`; so do `git --exec-path=<dir>` and
+    `git -c core.pager=<cmd>`. The last two are not in the advisory — they turned up while
+    reproducing it, which is the point: the defect is allowing a command by NAME while
+    ignoring its ARGUMENTS, not any one flag. `git push --force`, `git clean -fdx` and
+    `git reset --hard` were reachable through the same slot.
+  - `cat`, `echo` and `printf` feeding `agy-delegate -` were a file and secret
+    exfiltration primitive. The scanner blocks `$(` but allows `$VAR`, and the right-hand
+    side sends stdin to the external model as the prompt: `cat ~/.ssh/id_ed25519 |
+    agy-delegate -` and `printf %s "$AWS_SECRET_ACCESS_KEY" | agy-delegate -` were both
+    allowed, with no file allowlist and no confirmation.
+
+  Nothing needed the pipeline. This subagent's own contract already said the gate "blocks
+  every Bash command except the delegation wrapper" and showed only
+  `agy-delegate [options] "<task>"`; the documented
+  `git diff | agy-delegate --tier pro -` in `commands/review.md` runs as the **main**
+  Claude, and this hook is registered in the agent frontmatter, so it never gated that.
+  The gate is now what its own documentation always claimed. The denial says so and points
+  at `--dir <repo-root>` instead.
+- **`agy-media` now says what it is about to expose.** The advisory flagged it as a
+  contributing factor rather than a bypass: every real run passes `--yolo` (all tools,
+  including terminal) together with `--dir` on the media file's *containing* directory, so
+  choosing one recording hands over everything beside it — which "transcribe this file" does
+  not suggest. It prints the directory and how many entries are in it. `--sandbox` is the
+  candidate narrowing and is **not** applied: agy on the maintainer's account currently
+  fails every run with `Eligibility check failed`, so it could not be measured, and this
+  repository does not ship untested behavioural changes to working features.
+
+12 regression tests, every one of the advisory's proofs among them, each verified to fail
+against the unfixed gate. The two extra `git` vectors are included, and so is a liveness
+assertion — a PoC harness that cannot produce an *allowed* command would let every deny
+assertion pass on a broken payload, which has happened in this suite before.
+
 ## 0.24.0
 - **New: `/antigravity:set-model` / `agy-set-model` — change agy's own default model.**
   The plugin's `default_tier`/`default_model`/`tier_*` userConfig options only steer calls

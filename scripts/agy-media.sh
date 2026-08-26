@@ -162,6 +162,25 @@ Transcript file: $OUT"
 
 # --- delegate ----------------------------------------------------------------
 # --yolo: agy needs tool permission to read the media file and write the transcript.
+#
+# Say what that costs, every time. GHSA-hwv2-vjgj-8rcv named this as a contributing
+# factor and framed it as the containing directory — "picking one file exposes everything
+# beside it". Measured, that is too small: --dir is where agy starts looking, not a
+# boundary, and under --yolo it writes outside it. The grant is over the machine. None of
+# that is obvious from "transcribe this recording", and the person choosing the file is
+# the only one who can judge what is reachable from here.
+#
+# --sandbox was the candidate narrowing in 0.25.0 and it is NOT coming. It was deferred
+# there because agy could not run; now it can, and the measurement says it does nothing:
+# with --yolo, a write to an absolute path OUTSIDE --dir succeeded, `id` ran, and curl
+# reached the network — identical with and without the flag. Adding it would have shipped
+# something that reads as containment and provides none.
+#
+# The same measurement corrected this warning. 0.25.0 said "--dir exposes $DIR", which
+# UNDERSTATES it: --dir is where agy looks first, not a boundary. --yolo approves every
+# tool, and agy then writes wherever it likes.
+NEIGHBOURS="$(ls -1 "$DIR" 2>/dev/null | grep -c . || echo 0)"
+echo "agy-media: --yolo approves ALL agy tools for this run, including the terminal, so this is a grant over YOUR WHOLE MACHINE — not just $DIR ($NEIGHBOURS entr(y/ies) beside your file), which is only where agy starts looking. Measured: under --yolo, agy writes outside --dir and runs shell commands, and --sandbox does not change that. Run this on files you are willing to hand an unsupervised agent." >&2
 ARGS=(--tier "$TIER" --yolo --dir "$DIR" --timeout "$TIMEOUT")
 if [ "$PRINT_CMD" -eq 1 ]; then
   { printf 'agy-delegate'; printf ' %q' "${ARGS[@]}" "$PROMPT"; printf '\n'; }
