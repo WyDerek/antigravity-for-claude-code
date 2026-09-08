@@ -188,8 +188,8 @@ ID=$(scripts/agy-job.sh start --tier pro --dir . "big task"); scripts/agy-job.sh
 
 | tier | model | use for |
 |------|-------|---------|
-| `flash` (default) | Gemini 3.7 Flash (High) | most bulk work |
-| `flash-lo` | Gemini 3.7 Flash (Low) | cheapest, trivial tasks |
+| `flash` (default) | Gemini 3.8 Flash (High) | most bulk work |
+| `flash-lo` | Gemini 3.8 Flash (Low) | cheapest, trivial tasks |
 | `pro` | Gemini 3.1 Pro (High) | harder reasoning / cross-checks |
 
 **agy is multi-model.** Tiers default to Gemini, but you can use any model `agy models` lists
@@ -205,7 +205,7 @@ separate default model for plain `agy` / `agy -p` runs, persisted in
 models` call rather than a hardcoded list, so it always reflects what your plan currently
 exposes.
 
-> **The `flash` tiers moved to Gemini 3.7 Flash in 0.24.0.** 3.6 and 3.7 are priced *identically* and both undercut 3.5 on every axis — input and cached-input are exactly **half** ($1.50 -> $0.75, $0.15 -> $0.075) and output is cheaper still, **$9.00 -> $3.75** (a 58% cut, not half) — under promotional pricing that **ends 2026-12-31**, after which they settle at $1.50 / $7.50 / $0.15 (still cheaper than 3.5 on output). Checked against two sources on 2026-08-17; [`prices.json`](prices.json) carries both sets. No quality claim is made here — the reason to move is price and currency, and this repo has retracted a model comparison before for being measured on a build where `--model` was ignored. **If your plan does not serve 3.7 yet** (newer models can lag on enterprise Vertex) you find out immediately, not silently: `agy-doctor` warns that the tier model is absent from `agy models`, and a delegation exits **14** naming the fix. Remap with the `tier_flash` / `tier_flash_lo` options to anything `agy models` lists — `Gemini 3.6 Flash (High)` costs exactly the same. (agy 1.1.5 switched `agy models` to slugs like `gemini-3.7-flash`; both slugs and display names work with `--model`, and `doctor` matches either.)
+> **The `flash` tiers moved to Gemini 3.8 Flash in 0.26.0** (previously 3.7, moved from 3.6 in 0.24.0). Vendor pricing pages describe 3.8 as sharing the same promotional pricing structure as 3.6/3.7 — input/cached-input at **half** the 3.5 rate ($1.50 -> $0.75, $0.15 -> $0.075) and output cheaper still, **$9.00 -> $3.75** — through **2026-12-31**, after which they settle at $1.50 / $7.50 / $0.15. Unlike the 3.6→3.7 move, this figure was **not corroborated across two independent sources**: a fetch of ai.google.dev returned the numbers above, but a second fetch of Google Cloud's pricing page failed to surface 3.8 at all. A live `agy models` call does confirm 3.8 Flash is available on this plan, so the model itself is real — but treat the pricing above as unverified until re-checked directly against ai.google.dev/gemini-api/docs/pricing; see the caveat in [`prices.json`](prices.json). No quality claim is made here — the reason to move is price and currency, and this repo has retracted a model comparison before for being measured on a build where `--model` was ignored. **If your plan does not serve 3.8 yet** (newer models can lag on enterprise Vertex) you find out immediately, not silently: `agy-doctor` warns that the tier model is absent from `agy models`, and a delegation exits **14** naming the fix. Remap with the `tier_flash` / `tier_flash_lo` options to anything `agy models` lists — `Gemini 3.7 Flash (High)` costs the same under current promotional pricing. (agy 1.1.5 switched `agy models` to slugs like `gemini-3.8-flash`; both slugs and display names work with `--model`, and `doctor` matches either.)
 
 </details>
 

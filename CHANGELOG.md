@@ -3,6 +3,25 @@
 All notable changes to **Antigravity for Claude Code**. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions are in `.claude-plugin/plugin.json`.
 
+## 0.26.0
+
+- **The `flash` tiers move to Gemini 3.8 Flash (High) / (Low).** `agy models` now lists
+  3.8 as available on this plan (`gemini-3.8-flash-high/medium/low`), so `model_for_tier()`
+  in `agy-delegate.sh`, `doctor.sh`'s defaults, and the `tier_flash` / `tier_flash_lo` plugin
+  option descriptions all move from 3.7 to 3.8.
+  **The pricing side of this move is weaker than the 3.6→3.7 one and is flagged as such.**
+  A fetch of ai.google.dev returned 3.8 Flash pricing identical to 3.6/3.7 (same promotional
+  structure: input/cached-input half of 3.5, output $9.00 -> $3.75, promotion ending
+  2026-12-31); a second fetch of Google Cloud's Vertex pricing page failed to surface 3.8 at
+  all. Since the CLI itself confirms 3.8 is real and available, that gap reads as the fetch
+  tool missing or not having the page's content rather than the model not existing, but it
+  means the 3.8 figures in `prices.json` (`gemini_flash_38`, `gemini_flash_38_post_2026`)
+  are carried over from 3.6/3.7 rather than independently confirmed the way those were.
+  `prices.json`'s `_gemini_flash_note`, the README, and `SKILL.md` all say so explicitly —
+  re-verify against ai.google.dev/gemini-api/docs/pricing before quoting a cost figure that
+  matters. No quality claim is attached to the move; it is the same price-and-currency
+  rationale as 0.24.0's 3.6→3.7 move, now one rung up.
+
 ## 0.25.2
 
 - **agy-delegate.sh no longer burns a CPU core on large outputs on macOS.** The two
