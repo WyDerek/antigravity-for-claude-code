@@ -25,16 +25,32 @@ default `~/.claude`, but *inside* a relocated dir.
 | Sessions | `~/.claude/projects/<enc>/<uuid>.jsonl` (+ `<uuid>/subagents/`) | JSONL |
 | Credentials | macOS Keychain (`Claude Code-credentials`) | not on disk |
 
-Things people expect and will not find: `~/.claude/CLAUDE.md`, `~/.claude/memory/`,
-`~/.claude/agents/`, `~/.claude/commands/`, `~/.claude/hooks/`, `~/.claude/todos/`
-(now `tasks/`). Hooks exist only inside plugins.
+Not created by a fresh install, but real Claude Code locations once the user populates
+them — so absent on the machine this was measured on, and present on plenty of others:
 
-**The directory-name encoding is lossy.** `/`, `_` and `.` all become `-`:
+| Asset | Path | Format |
+| --- | --- | --- |
+| User memory | `~/.claude/CLAUDE.md` | Markdown |
+| User subagents | `~/.claude/agents/<name>.md` | Markdown + frontmatter — `name`, `description`, `tools`, `model` |
+| User slash commands | `~/.claude/commands/<name>.md` | Markdown + frontmatter |
+| User hooks | `hooks` key of `settings.json` / `settings.local.json` | JSON; the `command` can point anywhere — `~/.claude/hooks/` is a common convention, not a location Claude Code reads |
+
+`agy-migrate` reads none of these; see the matrix in §6. Genuinely absent:
+`~/.claude/memory/`, and `~/.claude/todos/` (now `tasks/`).
+
+**The directory-name encoding is lossy.** `/`, `_`, `.` and — on Windows — the drive
+`:` all become `-`:
 
 ```
 /Users/x/Documents/GitHub                       -> -Users-x-Documents-GitHub
 /Users/x/repo/202602_nano_multi-turn_edit       -> -Users-x-repo-202602-nano-multi-turn-edit
+C:/Users/x/Projects/repo                        -> C--Users-x-Projects-repo
 ```
+
+`\` counts as a separator too, which matters more than it looks: `~/.claude.json`
+records POSIX-style paths even on Windows, while `os.path.expanduser("~")` hands back
+backslashes. Both spellings name the same project, so both have to encode identically
+or the home-dir project — Claude's de-facto global memory — resolves to nothing.
 
 So it can only be used forward. `agy-migrate` re-encodes every path in
 `~/.claude.json`'s `projects` and matches. Two cases resolve to nothing and are
@@ -165,7 +181,7 @@ the directory holding `hooks.json`, so it is rewritten to `./`.
 | plugin `skills/`, `agents/`, `commands/` | `config/plugins/<n>/` | native importer via staging HOME |
 | plugin `hooks/hooks.json` | `config/plugins/<n>/hooks.json` | translated (table above) |
 | plugin `.mcp.json` | `config/plugins/<n>/mcp_config.json` | importer, then remote entries repaired |
-| `CLAUDE.md` | `AGENTS.md` | symlink |
+| `CLAUDE.md` | `AGENTS.md` | symlink, inside git repositories only |
 | `projects/<home>/memory/` | `config/plugins/claude-code-memory/rules/` | generated, `trigger: always_on` |
 | `projects/<repo>/memory/` | `<repo>/.agents/rules/` | generated + project registration |
 | `.mcp.json`, `projects.*.mcpServers`, desktop config | `config/mcp_config.json` | merged, `url`→`serverUrl` |
@@ -173,9 +189,23 @@ the directory holding `hooks.json`, so it is rewritten to `./`.
 | `permissions.allow` `Bash(...)` | `command(...)` | lossy, widening — proposal only |
 | `permissions.allow` `Read/WebFetch/WebSearch/Skill/mcp__*` | — | no equivalent |
 | `model`, `effortLevel`, `env` | — | reported, never written |
+| `~/.claude/agents/*.md` | — | not read: `model:` names a Claude tier, `tools:` lists Claude tool names |
+| `~/.claude/CLAUDE.md` | — | not read; `~/.claude` is pruned from the `CLAUDE.md` walk |
+| `~/.claude/commands/*.md` | — | not read; only plugin `commands/` go through the importer |
+| `settings.json` `hooks` | — | not read; only plugin `hooks.json` is translated |
 | `projects/**/*.jsonl` | — | **impossible**, see below |
 | `tasks/`, `plans/`, `file-history/`, `jobs/`, `paste-cache/` | — | no counterpart |
 | credentials | — | different auth; never copy |
+
+**What the `CLAUDE.md` / `.mcp.json` walk never enters.** `~` is routinely one of the
+recorded projects, so the scan can reach the whole home directory. Excluded as whole
+trees: both tools' own config dirs (`~/.claude`, `~/.gemini`), macOS's `~/Library`, and
+its Windows counterparts `%APPDATA%` and `%LOCALAPPDATA%` — app state, not your work,
+and the home of the Dart pub cache both before and after Dart 3.0 moved it from Roaming
+to Local. Also excluded: the caches an environment variable can move (`PUB_CACHE`,
+`UV_CACHE_DIR`, `GOMODCACHE`) and `$GOPATH/pkg/mod`, plus `node_modules`, `.venv`,
+`dist`, `build` and every dot-prefixed directory by name. The exclusion is silent, so a
+project you keep inside one of those trees will not appear in the plan.
 
 ### Why sessions cannot be migrated
 

@@ -8,7 +8,8 @@ Design constraints, all of them learned the hard way from probing agy 1.1.12
 
   * The Claude Code config dir is treated as READ-ONLY. The only file this tool
     can ever create on the Claude side is an `AGENTS.md` symlink beside an
-    existing `CLAUDE.md`, and only under --include-repos.
+    existing `CLAUDE.md`, and only under --include-repos, and only inside a git
+    repository — a scan rooted at `~` also reaches vendored dependency source.
   * Antigravity rules are silently ignored unless their frontmatter carries
     `trigger: always_on`. No error, no warning — they just never load. So
     migrated memory is REWRITTEN with that frontmatter, never stripped.
@@ -23,7 +24,9 @@ Design constraints, all of them learned the hard way from probing agy 1.1.12
 """
 
 import argparse
+import functools
 import json
+import ntpath
 import os
 import re
 import shutil
@@ -74,6 +77,43 @@ HOOK_EVENT_MAP = {
     "UserPromptSubmit": "PreInvocation",
     "Stop": "Stop",
 }
+
+
+def configure_stdio():
+    """Make the streams able to carry the report.
+
+    A redirected stdout on Windows defaults to the legacy ANSI codepage (cp1252),
+    which cannot encode the status glyphs — print_report() used to die on the first
+    one, mid-report, with a UnicodeEncodeError. Prefer UTF-8, but honour an explicit
+    PYTHONIOENCODING rather than overriding a deliberate choice; either way switch
+    the error handler so no character can ever abort a run.
+    """
+    pinned = bool(os.environ.get("PYTHONIOENCODING"))
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:      # not a TextIOWrapper (pytest capture, etc.)
+            continue
+        try:
+            if pinned:
+                reconfigure(errors="replace")
+            else:
+                reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError, LookupError):
+            pass
+
+
+def stream_can_encode(text, stream=None):
+    enc = getattr(stream if stream is not None else sys.stdout, "encoding", None)
+    if not enc:
+        return False
+    try:
+        text.encode(enc)
+    except (UnicodeError, LookupError):
+        return False
+    return True
+
+
+configure_stdio()
 
 C = {
     "ok": "\033[32m", "warn": "\033[33m", "skip": "\033[90m",
@@ -156,9 +196,16 @@ def now_iso():
 
 
 def encode_project_dir(path):
-    """Claude Code's projects/ dir name. Lossy: '/', '_' and '.' all become '-',
-    which is why this only ever runs FORWARD, never as a decode."""
-    return re.sub(r"[/_.]", "-", path)
+    """Claude Code's projects/ dir name. Lossy: '/', '_', '.' and the Windows
+    drive ':' all become '-', which is why this only ever runs FORWARD, never as
+    a decode.
+
+    The separator is normalised first because the two callers disagree about it:
+    ~/.claude.json records POSIX-style paths even on Windows, while
+    os.path.expanduser("~") hands back backslashes. Both have to encode the same
+    way or the home-dir project — Claude's de-facto global memory — never matches.
+    """
+    return re.sub(r"[/_.:]", "-", path.replace("\\", "/"))
 
 
 def default_roots():
@@ -177,11 +224,23 @@ def default_roots():
 
 
 def git_root(path):
+    """The repository `path` is in, or None when it is in none.
+
+    FileNotFoundError is deliberately NOT caught. "git is not installed" and "this is
+    not a repository" are different facts, and both callers state the second one out
+    loud — so swallowing the first makes the report lie. main() refuses to run with
+    --include-repos when git is absent, which is the only mode that calls this, so the
+    exception is a guard against a future caller rather than something a user meets.
+    The broad except stays for what it was for: a timeout, or a git that fails on its
+    own terms.
+    """
     try:
         out = subprocess.run(["git", "-C", path, "rev-parse", "--show-toplevel"],
                              capture_output=True, text=True, timeout=10)
         if out.returncode == 0:
             return out.stdout.strip()
+    except FileNotFoundError:
+        raise
     except Exception:
         pass
     return None
@@ -396,15 +455,76 @@ def unit_skills(plan, mf):
 SKIP_DIRS = {"node_modules", ".git", ".venv", "venv", "dist", "build", "__pycache__"}
 
 
+def app_data_roots():
+    """Windows' equivalents of macOS's `~/Library`: application state, not the user's work.
+
+    `~/Library` is excluded as a whole tree, but its Windows counterparts were not, and
+    `AppData` is not dot-prefixed, so a scan rooted at `~` walks all of it. Naming the
+    two caches that had been found there one at a time is a losing game: the older Dart
+    and Flutter default is `%APPDATA%\\Pub\\Cache` (Roaming, not Local), and pip, npm,
+    pnpm, Temp and every editor's extension tree live in the same two directories.
+
+    No os.name branch, like the rest of this list — an entry that does not exist simply
+    never matches, which is also what makes the Windows paths testable on POSIX CI.
+    """
+    return [os.environ.get("APPDATA") or os.path.join(home(), "AppData", "Roaming"),
+            os.environ.get("LOCALAPPDATA") or os.path.join(home(), "AppData", "Local")]
+
+
+def package_cache_roots():
+    """Package-manager caches that sit under $HOME without a dot-prefixed name.
+
+    `~` is very often one of the directories Claude Code has recorded, and then the
+    scan walks the whole home directory — the vendored source every package manager
+    unpacks there included. An `AGENTS.md` symlink inside a downloaded package is not
+    a migration; it is litter in a tree the package manager owns and replaces on the
+    next fetch. uv's `git-v0/checkouts/` even holds real clones, so the git-repo rule
+    in unit_claudemd() does not catch that one on its own.
+
+    Only the visible names need listing, and only the ones outside the roots above.
+    walk_user_tree() already prunes every dot-prefixed directory — `~/.pub-cache`,
+    `~/.cache/uv`, `~/.cargo`, `~/.gradle`, `~/.m2`, `~/.nuget` — along with
+    `node_modules` and `.venv` by name; excluded_roots() covers macOS's
+    `~/Library/Caches` and, via app_data_roots(), the Windows homes of the Dart pub and
+    uv caches. That leaves the three caches a user can move with an environment
+    variable, and Go's module cache, which is `$GOPATH/pkg/mod` on every platform: one
+    run over a real `$HOME` found 23 module-cache `CLAUDE.md` files, none the user's.
+    """
+    roots = [os.environ.get("PUB_CACHE"),          # Dart pub, explicit
+             os.environ.get("UV_CACHE_DIR"),       # uv, explicit
+             os.environ.get("GOMODCACHE")]         # Go modules, explicit
+    # GOPATH is a list, and its default is ~/go on every platform.
+    gopath = os.environ.get("GOPATH") or os.path.join(home(), "go")
+    roots += [os.path.join(g, "pkg", "mod") for g in gopath.split(os.pathsep) if g]
+    return [p for p in roots if p]
+
+
 def excluded_roots():
-    """Never scan either tool's own config tree.
+    """Never scan either tool's own config tree, an app-data tree, or a package cache.
 
     `~/.claude/plugins/marketplaces/` holds cloned marketplace catalogues — hundreds
     of third-party `.mcp.json` files the user never configured. A real run over `$HOME`
     pulled 40 servers out of one. Plugin-owned MCP is the plugins unit's job anyway.
+    `~/Library` and its Windows counterparts are app state; package caches are vendored
+    source. See app_data_roots() and package_cache_roots().
     """
-    return (claude_dir(), gemini_root(), state_dir(),
-            os.path.join(home(), "Library"))
+    return ([claude_dir(), gemini_root(), state_dir(),
+             os.path.join(home(), "Library")]
+            + app_data_roots() + package_cache_roots())
+
+
+@functools.lru_cache(maxsize=1)
+def excluded_roots_normalised():
+    """excluded_roots(), absolute and normcase'd, built once per process.
+
+    under_excluded() is called on every directory the walk reaches AND on each of its
+    children, so roughly twice per directory, and a `$HOME` walk reaches hundreds of
+    thousands. Rebuilding the list each time — three expanduser, six environment reads,
+    the joins, then abspath + normcase over every root — measured 18.47 us per call
+    against 1.26 from the cache over 200k calls, 93% of the cost for an answer that
+    cannot change: nothing here writes to os.environ, and every run is a fresh process.
+    """
+    return tuple(os.path.normcase(os.path.abspath(x)) for x in excluded_roots())
 
 
 def under_excluded(path):
@@ -414,15 +534,28 @@ def under_excluded(path):
     selected via CLAUDE_CONFIG_DIR) because it shares a prefix with `~/.claude`, and
     `~/Library-notes` because of `~/Library`. The exclusion is silent, so that would
     just look like the tool ignoring a directory for no reason.
+
+    normcase() because some excluded roots come from the environment (`LOCALAPPDATA`),
+    which need not agree with os.walk()'s casing on a case-insensitive filesystem.
     """
-    p = os.path.abspath(path)
+    p = os.path.normcase(os.path.abspath(path))
     return any(p == e or p.startswith(e.rstrip(os.sep) + os.sep)
-               for e in (os.path.abspath(x) for x in excluded_roots()))
+               for e in excluded_roots_normalised())
 
 
 def walk_user_tree(root):
-    """os.walk with vendor dirs and both config trees pruned."""
+    """os.walk with vendor dirs and both config trees pruned.
+
+    The check is on `dirpath`, not only on the children, because a root is scanned
+    as given: `~/.claude` is itself a recorded project on any machine where Claude
+    Code has been run from there, and pruning only its children would still offer a
+    symlink beside `~/.claude/CLAUDE.md` — inside the tree this tool treats as
+    read-only.
+    """
     for dirpath, dirnames, filenames in os.walk(root):
+        if under_excluded(dirpath):
+            dirnames[:] = []
+            continue
         dirnames[:] = [
             d for d in dirnames
             if d not in SKIP_DIRS
@@ -450,8 +583,18 @@ def unit_claudemd(plan, mf, roots, include_repos):
         plan.add("claudemd", "skip", "needs-flag", f"{len(mds)} file(s)",
                  "pass --include-repos to create AGENTS.md symlinks")
         return
+    outside = []
     for md in mds:
-        agents = os.path.join(os.path.dirname(md), "AGENTS.md")
+        parent = os.path.dirname(md)
+        # The flag says "repos", and a repository is the one place a CLAUDE.md is
+        # certainly the user's own: the same walk also reaches vendored source, where
+        # a symlink would be litter the package manager replaces on the next fetch.
+        # Reported rather than dropped — a CLAUDE.md in a plain directory someone
+        # really does work in would otherwise vanish from the plan without a word.
+        if git_root(parent) is None:
+            outside.append(parent)
+            continue
+        agents = os.path.join(parent, "AGENTS.md")
         if os.path.islink(agents):
             plan.add("claudemd", "skip", "exists", agents, "already a symlink")
             continue
@@ -466,6 +609,13 @@ def unit_claudemd(plan, mf, roots, include_repos):
 
         plan.add("claudemd", "ok", "symlink", agents, "-> CLAUDE.md", fn)
 
+    if outside:
+        shown = ", ".join(outside[:3])
+        if len(outside) > 3:
+            shown += f", and {len(outside) - 3} more"
+        plan.add("claudemd", "skip", "not-a-repo", f"{len(outside)} file(s)",
+                 f"not in a git repository, so --include-repos leaves them alone: {shown}")
+
 
 # --- unit: memory ------------------------------------------------------------
 
@@ -474,7 +624,7 @@ def memory_sources():
 
     Resolution is forward-only: we re-encode each known project path from
     ~/.claude.json and compare. Decoding the directory name is impossible because
-    '/', '_' and '.' all collapse to '-'.
+    '/', '_', '.' and the Windows drive ':' all collapse to '-'.
     """
     base = os.path.join(claude_dir(), "projects")
     if not os.path.isdir(base):
@@ -1024,6 +1174,27 @@ def convert_matcher(matcher):
     return "|".join(mapped), note
 
 
+def native_import_env(stage):
+    """Environment that points the native importer at the staging tree.
+
+    HOME alone is not enough: `agy` is a Go binary, and os.UserHomeDir() reads
+    USERPROFILE on Windows (falling back to HOMEDRIVE+HOMEPATH), never HOME. With
+    only HOME set the importer scanned the REAL ~/.claude, whose nested
+    plugins/cache/<marketplace>/<plugin>/<version>/ layout it cannot see, and
+    reported "No claude extensions found" — the exact limitation staging exists to
+    work around. `stage` comes from tempfile.mkdtemp() and is already absolute;
+    ntpath rather than os.path so the drive split is the Windows one whichever
+    platform builds the env — which is what makes this testable on a POSIX CI.
+    """
+    env = dict(os.environ, HOME=stage)
+    if os.name == "nt":
+        drive, tail = ntpath.splitdrive(stage)
+        env["USERPROFILE"] = stage
+        env["HOMEDRIVE"], env["HOMEPATH"] = drive, tail
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    return env
+
+
 def run_native_import(stage, plugins):
     """Flatten real plugins into a staging HOME and let agy convert them there.
     The importer needs no auth, so nothing touches the real config.
@@ -1039,8 +1210,7 @@ def run_native_import(stage, plugins):
         dst = os.path.join(pdir, name)
         if not os.path.exists(dst):
             shutil.copytree(src, dst, symlinks=False, ignore=ignore)
-    env = dict(os.environ, HOME=stage)
-    env.pop("CLAUDE_CONFIG_DIR", None)
+    env = native_import_env(stage)
     try:
         r = subprocess.run(["agy", "plugin", "import", "claude"],
                            cwd=stage, env=env, capture_output=True, text=True,
@@ -1172,17 +1342,17 @@ def unit_plugins(plan, mf):
         try:
             rc, out = run_native_import(stage, fresh)
             if rc != 0:
-                print(f"    · native importer failed (rc={rc}): "
+                print(f"    {SYM['skip']} native importer failed (rc={rc}): "
                       f"{out.strip().splitlines()[-1] if out.strip() else ''}")
                 return False
             for n in postprocess_staged(stage, fresh, plan):
-                print(f"    · {n}")
+                print(f"    {SYM['skip']} {n}")
             sroot = os.path.join(stage, ".gemini", "config", "plugins")
             staged = sorted(os.listdir(sroot)) if os.path.isdir(sroot) else []
             if not staged:
                 # rc==0 with no output is how the importer reports "found nothing".
                 # Reporting success here would be a lie.
-                print(f"    · native importer produced nothing: "
+                print(f"    {SYM['skip']} native importer produced nothing: "
                       f"{out.strip() or '(no output)'}")
                 return False
             copied = 0
@@ -1193,7 +1363,7 @@ def unit_plugins(plan, mf):
                 shutil.copytree(os.path.join(sroot, name), target)
                 mf.trees.append(target)     # we created it whole; undo removes it whole
                 copied += 1
-            print(f"    · placed {copied}/{len(fresh)} plugin(s)")
+            print(f"    {SYM['skip']} placed {copied}/{len(fresh)} plugin(s)")
             sman = read_json(os.path.join(stage, ".gemini", "config",
                                           "import_manifest.json"), None)
             if sman:
@@ -1298,7 +1468,13 @@ def do_uninstall(apply_):
 
 # --- report ------------------------------------------------------------------
 
-SYM = {"ok": "✓", "warn": "⚠", "skip": "·", "err": "✗"}
+SYM_UNICODE = {"ok": "✓", "warn": "⚠", "skip": "·", "err": "✗"}
+SYM_ASCII = {"ok": "+", "warn": "!", "skip": "-", "err": "x"}
+# configure_stdio() has already tried to get a UTF-8 stream; where it could not —
+# PYTHONIOENCODING=ascii, or a stream that refuses to be reconfigured — fall back
+# rather than emit a column of replacement characters.
+SYM = (SYM_UNICODE if stream_can_encode("".join(SYM_UNICODE.values()))
+       else SYM_ASCII)
 
 
 def print_report(plan, apply_):
@@ -1309,7 +1485,7 @@ def print_report(plan, apply_):
         print(f"\n{C['hdr']}[{unit}]{C['off']}")
         for i in items:
             col = C.get(i["level"], "")
-            print(f"  {col}{SYM.get(i['level'],'·')}{C['off']} "
+            print(f"  {col}{SYM.get(i['level'], SYM['skip'])}{C['off']} "
                   f"{i['action']:<20} {i['target']}")
             if i["detail"]:
                 print(f"      {i['detail']}")
@@ -1368,6 +1544,18 @@ def main(argv=None):
         print(f"{C['err']}No Antigravity install at {gemini_root()} "
               f"— run agy once first{C['off']}")
         return 18
+    # git decides which directories are repositories, and both write paths behind
+    # --include-repos ask it. Without git, git_root() answers None for every path and
+    # the report states a falsehood: a real repository is announced as `not-a-repo`
+    # ("not in a git repository"), its memory as `out-of-reach` ("consider global
+    # scope"), and the CLAUDE.md symlink is quietly never proposed — all under a clean
+    # rc 0. Only this flag needs git, so an ordinary run is left alone.
+    if args.include_repos and shutil.which("git") is None:
+        print(f"{C['err']}--include-repos needs git on PATH: git is what decides "
+              f"which directories are repositories{C['off']}\n"
+              f"Install git, or drop --include-repos — without it the run reports "
+              f"repo-scoped work as skipped instead of guessing.")
+        return 18
 
     only = {u for u in args.only.split(",") if u} or set(UNITS)
     skip = {u for u in args.skip.split(",") if u}
@@ -1424,9 +1612,9 @@ def main(argv=None):
                 res = i["fn"]()
             except Exception as e:                       # keep going; report at the end
                 res, e_txt = False, f"{type(e).__name__}: {e}"
-                print(f"  {C['err']}✗{C['off']} {i['action']} {i['target']} — {e_txt}")
+                print(f"  {C['err']}{SYM['err']}{C['off']} {i['action']} {i['target']} — {e_txt}")
             else:
-                mark = C["err"] + "✗" if res is False else C["ok"] + "✓"
+                mark = (C["err"] + SYM["err"]) if res is False else (C["ok"] + SYM["ok"])
                 print(f"  {mark}{C['off']} {i['action']} {i['target']}")
             if res is False:
                 failed.append(f"{i['unit']}/{i['action']}")

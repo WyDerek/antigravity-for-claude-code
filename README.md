@@ -123,6 +123,8 @@ by default; `--apply` backs up first and `--uninstall --apply` reverses it. Your
 | MCP servers (project + desktop app) | merged into `~/.gemini/config/mcp_config.json` |
 | trusted projects | `trustedWorkspaces` |
 | `permissions.allow` | a **proposal file** — see below |
+| `~/.claude/agents/` | nothing. A user subagent's `model:` names a Claude tier (`opus` / `sonnet` / `haiku`) and its `tools:` lists Claude tool names, so there is no honest mapping; subagents shipped *inside a plugin* come across with the plugin |
+| `~/.claude/CLAUDE.md`, `~/.claude/commands/`, `hooks` in `settings.json` | nothing — only the copies that ship inside a plugin are carried across |
 | session history | nothing. Antigravity stores conversations as protobuf blobs inside per-conversation SQLite files; there is no writer |
 
 Two things are deliberately not automatic. **Permissions widen when translated** —
@@ -174,7 +176,7 @@ scripts/agy-delegate.sh --digest --dir . "Map the auth flow end to end"
 # write task: needs a grant — a permissions.allow write_file(<dir>) rule, or --yolo (run on a branch)
 scripts/agy-delegate.sh --yolo --dir ./app "Implement X per SPEC.md"
 
-# live web / Google search (tools need --yolo in headless mode)
+# live web / Google search — and, since agy 1.1.28, any URL read — need --yolo (or a read_url(<target>) rule) headless
 scripts/agy-delegate.sh --tier pro --yolo "Web-search <X>. Give URLs + dates."
 
 # Vertex AI Search over internal data
@@ -241,6 +243,7 @@ Delegation doesn't save money by itself — these do (also in the skill):
 - `-p`/`--print` **takes the prompt as its value** and must come last — the wrapper handles this.
 - `--print` drops stdout on a non-TTY unless stdin is detached (handled via `< /dev/null`). **Structured output arrived in agy 1.1.8** (`--output-format json`): the wrapper now uses it internally on ≥1.1.8 to classify failures from the structured error and to report the executor's real token usage (incl. `cache_read`) as an `AGY_USAGE` line on stderr — stdout is unchanged. Older agy falls back to plain text (toggle with the `structured_output` option). **If you're measuring, set `AGY_USAGE_LOG=/path`** (or the `usage_log` option): stderr is easily lost — `2>&1 | tail -N`, the natural way to keep Claude's context lean, keeps the digest and drops the usage line.
 - **Pipe hang and empty-output semantics moved upstream.** agy 1.1.24 fixed the cause of the issue-#37 hang (its MCP children kept the caller's pipes open); the wrapper keeps routing agy's output through files, which costs nothing and still covers older builds. Since agy 1.1.18 a dropped agent stream exits non-zero instead of rc 0 + empty, so the wrapper's exit `3` now means agy genuinely returned nothing (from agy's changelog; not reproduced here).
+- **An expired `--print-timeout` is no longer a failure on agy's side (1.1.28).** agy returns the partial reply with rc 0 and one stderr line (`[agy] print timeout after 5s with turn in progress; returning partial output`, measured on 1.2.0) and reports no usage for the turn. The wrapper prints that partial reply and still exits `12`, so a truncated answer never passes as a finished one; `--continue` resumes the conversation.
 - **The executor's trajectory is auditable.** Every agy run writes a step-by-step `transcript.jsonl`, and the `conversationId` in `AGY_USAGE` joins it to the cost 1:1. `agy-trace --audit <id>` (or `--audit --last`) shows step-type counts and every non-zero exit — a delegation can report SUCCESS while commands inside it failed. The command **strings** are recorded nowhere, so to attribute a filesystem change you must diff the tree.
 - **Two write grants, and the narrow one is not `--yolo`.** Headless agy's
   no-permission behavior has shifted every few releases (describe-only pre-1.1.0 ·
@@ -264,8 +267,10 @@ Delegation doesn't save money by itself — these do (also in the skill):
     `agy-doctor` checks your entries and reports the consequence that actually applies.
   - **`--yolo`** — the wrapper's flag, sent to agy as `--dangerously-skip-permissions` (agy
     1.1.25 rejects a literal `--yolo`) — auto-approves **all** tools, not just
-    writes. Needed when no rule covers the target, and for web / Vertex AI Search / terminal
-    tools.
+    writes. Needed when no rule covers the target, and for web search / URL reads (agy 1.1.28
+    made fetching URLs ask first; the narrow rule is `read_url(<target>)`) / Vertex AI Search /
+    terminal tools. Since agy 1.1.27 the wrapper names the refused tool from the envelope's
+    `denied_actions` (measured on 1.2.0).
   
   Confirmed on **agy 1.1.9** by a controlled A/B ([#37](https://github.com/yuting0624/antigravity-for-claude-code/issues/37)):
   a covered target wrote with no flag; an uncovered one came back `PERMISSION_DENIED` with

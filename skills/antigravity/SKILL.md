@@ -1,7 +1,7 @@
 ---
 name: antigravity
 description: Run the Antigravity CLI (Gemini) as a collaborating AI inside Claude Code, with intelligent model routing across the software development lifecycle. Claude is the conductor/orchestrator — requirements, architecture, the hard 20%, verification, and review — and routes deterministic, high-volume work (scaffolding, boilerplate, test generation, first-pass review, migrations, web/Vertex AI Search) to Antigravity (Gemini), the cheaper, faster model. Use when the user wants to "use Antigravity / agy", "vibe code / agentic engineering", "accelerate the SDLC", "delegate to Gemini", "scaffold / generate tests / migrate", "first-pass code review", "search web or internal/company data", "deep research / multi-source research report", "second-model cross-check", or "lower token cost on a big job". Claude always verifies Antigravity's output and re-checks itself if unsatisfied.
-version: 0.26.0
+version: 0.27.4
 ---
 
 # Antigravity for Claude Code — hybrid SDLC
@@ -112,8 +112,8 @@ live `agy models` call instead of a hardcoded name.
 agy-delegate [options] "the task prompt"
 ```
 Options: `--tier flash|flash-lo|pro` · `--dir <path>` (workspace, repeatable) ·
-`--timeout 10m` · `--yolo` (auto-approve **ALL** tools — the blunt grant; needed for web /
-Vertex AI Search / terminal, and for writes not covered by a `permissions.allow` rule. For a
+`--timeout 10m` · `--yolo` (auto-approve **ALL** tools — the blunt grant; needed for web search /
+URL reads (agy 1.1.28+; or a `read_url(<target>)` rule) / Vertex AI Search / terminal, and for writes not covered by a `permissions.allow` rule. For a
 file write the narrower grant is usually a `write_file(<dir>)` entry in
 `~/.gemini/antigravity-cli/settings.json`, which needs no flag — see below. Run write tasks
 on a branch) · `--mode accept-edits|plan`
@@ -155,11 +155,12 @@ generation to happen entirely on Gemini with **zero Claude tokens spent writing*
 the unit to the **`antigravity-delegate` subagent** (its only file-acting tool is the
 wrapper; it returns a digest for you to verify). Either way, *you* still own verification.
 
-**Structured failures.** The wrapper exits `10` quota · `11` auth · `12` timeout · `13`
+**Structured failures.** The wrapper exits `10` quota · `11` auth · `12` timeout (incl. an expired `--print-timeout`, which agy 1.1.28+ returns as a **partial** reply with rc 0 — the wrapper prints it and still exits 12) · `13`
 agy-missing · `14` model-unavailable (a `--model` / `tier_*` / `default_model` name not in
 `agy models` — agy ≥ 1.1.2 hard-fails instead of silently downgrading) · `15`
 permission-denied (a tool needed permission headless — BOTH the soft deny, agy 1.1.3+ and
-again from 1.1.20, and 1.1.13's hard error — add a `permissions.allow` rule or pass `--yolo`)
+again from 1.1.20, and 1.1.13's hard error — add a `permissions.allow` rule or pass `--yolo`;
+since 1.1.27 the wrapper names the refused tool from the envelope's `denied_actions`)
 (besides `2` failed / `3` empty). On agy ≥ 1.1.8 these are derived from the structured
 `status`/`error` envelope rather than stderr pattern-matching, so the classification is
 reliable. It prints a `AGY_SIGNAL {...}` line on stderr;
@@ -230,7 +231,7 @@ commands** (`--yolo` grants write + terminal):
 - **Write tasks need a grant — and it does not have to be `--yolo`.** Headless agy's no-permission behavior has shifted
   every few releases — describe-only (pre-1.1.0), scratch-divert (1.1.0–1.1.2), soft-deny
   with a stderr notice (1.1.3+), **hard error by 1.1.13**, soft again from **1.1.20**
-  (measured on 1.1.25) — but **your workspace stays
+  (measured on 1.1.25; since 1.1.27 also named in the envelope's `denied_actions`, 1.2.0) — but **your workspace stays
   untouched every time**; what varies is whether the run admits it (issue #10). The
   wrapper maps the soft deny and the hard error alike to exit 15. **Two things grant a write, and `--yolo` is
   the blunt one.** A `write_file(<dir>)` entry under `permissions.allow` in
@@ -238,7 +239,8 @@ commands** (`--yolo` grants write + terminal):
   with no flag at all — confirmed on agy 1.1.9 by a controlled A/B (#37): covered target
   wrote, uncovered target returned `PERMISSION_DENIED`, rule the only variable. agy's own
   denial text names the rule and offers `--yolo` as the *alternative*. `--yolo` auto-approves
-  **all** tools and is what you need when no rule covers the target, or for web / Vertex AI
+  **all** tools and is what you need when no rule covers the target, or for web search / URL
+  reads (agy 1.1.28 made those ask first; the narrow rule is `read_url(<target>)`) / Vertex AI
   Search / terminal. Not verified below 1.1.9; a glob form (`write_file(/path/**)`) was
   reported not to match. `<dir>` is a placeholder: left as written the rule grants nothing
   on any version — exit 15 with the rule visibly present in the file. Separately, and only
@@ -436,7 +438,7 @@ Verified behaviors (1.0.12 → 1.1.5):
   back) has not been measured for this tool — the grant and the exit code are the same either way.
   (On 1.0.x spawning was ungated, but `--yolo` is the durable choice here: a
   `permissions.allow` `write_file(...)` rule covers file writes only, not
-  `define_subagent`/`invoke_subagent`, and not web / Vertex AI Search.)
+  `define_subagent`/`invoke_subagent`, and not web search, URL reads (agy 1.1.28+) or Vertex AI Search.)
 - Each spawn's tool result includes a `logAbsoluteUri` → a **readable step-by-step
   `transcript.jsonl`** under `~/.gemini/antigravity-cli/brain/<conversationId>/` —
   *better* trajectory visibility than a plain delegation. Location unchanged across
